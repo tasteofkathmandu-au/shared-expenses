@@ -23,6 +23,7 @@
   </style>
 
   <!-- Firebase SDKs (compat) -->
+  <!-- If your network blocks gstatic, host these locally and update the src paths -->
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
@@ -53,7 +54,7 @@
       <button type="submit">Add</button>
     </form>
 
-    <div id="fallbackNotice" class="note hidden">Network blocked uploads to Firebase Storage. I saved the image inside Firestore instead. Everything will still display normally.</div>
+    <div id="fallbackNotice" class="note hidden">Network blocked Firebase Storage. Saved image inside Firestore (base64). Very large photos may be rejected.</div>
 
     <table>
       <thead>
@@ -75,7 +76,7 @@
   </div>
 
 <script>
-  // === Your Firebase Config ===
+  // === Firebase Config ===
   const firebaseConfig = {
     apiKey: "AIzaSyAPICqhLo25TvAQnCHZiZWDO6qyBA_CLXo",
     authDomain: "sharedexpenses-2510b.firebaseapp.com",
@@ -85,14 +86,14 @@
     appId: "1:312950592413:web:62239b41780211ba31d574"
   };
 
-  // Init Firebase services
+  // Init Firebase
   firebase.initializeApp(firebaseConfig);
   const auth = firebase.auth();
   const db = firebase.firestore();
   const storage = firebase.storage();
-  // keep uploads from hanging forever on shaky networks
-  storage.setMaxUploadRetryTime(45000);
-  storage.setMaxOperationRetryTime(45000);
+  // keep Firebase retries short so we can fallback quickly if Storage is blocked
+  storage.setMaxUploadRetryTime(20000);
+  storage.setMaxOperationRetryTime(20000);
 
   const expensesRef = db.collection("expenses");
 
@@ -127,9 +128,7 @@
   signOutBtn.addEventListener('click', async ()=>{ authError.textContent = ''; try { await auth.signOut(); } catch(e){ authError.textContent = 'Sign-out error: ' + (e?.message||e); }});
   auth.getRedirectResult().catch(e=>{ authError.textContent = 'Sign-in error: ' + (e?.message || e); });
 
-  function setFormEnabled(enabled){
-    entryForm.querySelectorAll('input,button').forEach(el => el.disabled = !enabled);
-  }
+  function setFormEnabled(enabled){ entryForm.querySelectorAll('input,button').forEach(el => el.disabled = !enabled); }
 
   auth.onAuthStateChanged(user=>{
     if(user){
@@ -158,87 +157,104 @@
     }
   });
 
-  // === Image helpers ===
-  async function compressImage(file, maxDim = 1280, quality = 0.8) {
-    // Return { blob, contentType }
-    return new Promise((resolve) => {
-      const originalType = file.type || 'application/octet-stream';
-      const reader = new FileReader();
-      const img = new Image();
-      const fallback = () => resolve({ blob: file, contentType: originalType });
+  // === Image helpers (inline fallback) ===
+  // compress to keep Firestore doc safely < 1MB (base64 adds ~33%)
+  async function compressImageCapped(file, maxDimStart = 1280, targetBytes = 650 * 1024) {
+    const dimOptions = [maxDimStart, 1100, 1000, 900, 800];
+    const qualityOptions = [0.8, 0.7, 0.6, 0.5, 0.4];
 
-      reader.onerror = fallback; img.onerror = fallback;
-      reader.onload = () => { img.src = reader.result; };
-      img.onload = () => {
+    function drawAndBlob(img, w, h, quality) {
+      return new Promise((resolve) => {
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        c.toBlob(b => resolve(b), 'image/jpeg', quality);
+      });
+    }
+    function loadImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        const img = new Image();
+        reader.onerror = () => reject(new Error('read-failed'));
+        img.onerror = () => reject(new Error('image-failed'));
+        reader.onload = () => { img.src = reader.result; };
+        img.onload = () => resolve(img);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    try {
+      const img = await loadImage(file);
+      for (const dim of dimOptions) {
         let { width, height } = img;
-        if (width > height && width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
-        else if (height >= width && height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; }
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        canvas.toBlob((blob) => {
-          if (blob) resolve({ blob, contentType: 'image/jpeg' });
-          else fallback();
-        }, 'image/jpeg', quality);
-      };
-      reader.readAsDataURL(file);
-    });
+        if (width > height && width > dim) { height = Math.round(height * (dim / width)); width = dim; }
+        else if (height >= width && height > dim) { width = Math.round(width * (dim / height)); height = dim; }
+        for (const q of qualityOptions) {
+          const blob = await drawAndBlob(img, width, height, q);
+          if (blob && blob.size <= targetBytes) {
+            return { blob, contentType: 'image/jpeg' };
+          }
+        }
+      }
+    } catch (_) { /* fall through */ }
+    return { blob: file, contentType: file.type || 'application/octet-stream' };
   }
 
   function blobToDataURL(blob){
     return new Promise((res, rej) => {
       const r = new FileReader();
-      r.onerror = rej;
-      r.onload = () => res(r.result);
+      r.onerror = rej; r.onload = () => res(r.result);
       r.readAsDataURL(blob);
     });
   }
 
-  // Try Storage upload; if network blocks Storage, fall back to inline data URL
-  async function uploadImageSmart(file) {
+  async function uploadViaFirebase(blob, filename, contentType){
+    const ref = storage.ref(`receipts/${filename}`);
+    const metadata = { contentType };
+    return new Promise((resolve, reject) => {
+      const task = ref.put(blob, metadata);
+      task.on('state_changed',
+        (snap) => {
+          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+          uploadStatus.textContent = `Uploading… ${pct}%`;
+        },
+        reject,
+        async () => { const url = await ref.getDownloadURL(); resolve(url); }
+      );
+    });
+  }
+
+  // Try Firebase Storage; on network timeouts, fall back to inline base64 in Firestore
+  async function uploadImageSmart(file){
     uploadStatus.textContent = 'Preparing image…';
 
-    // compress (or use original) and pick a good contentType
-    const { blob, contentType } = await compressImage(file);
-    let ext = 'jpg';
-    if (contentType !== 'image/jpeg') {
-      const m = (file.name || '').match(/\.(\w+)$/); ext = m ? m[1].toLowerCase() : 'bin';
-    }
-    const baseName = (file.name || 'receipt').replace(/[^a-z0-9._-]/gi,'_');
-    const safeName = `${Date.now()}-${baseName}.${ext}`;
-    const ref = storage.ref(`receipts/${safeName}`);
-    const metadata = { contentType };
-
-    // attempt Storage upload with progress
-    try {
-      await new Promise((resolve, reject) => {
-        const task = ref.put(blob, metadata);
-        task.on('state_changed',
-          (snap) => {
-            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-            uploadStatus.textContent = `Uploading… ${pct}%`;
-          },
-          (err) => reject(err),
-          () => resolve()
-        );
-      });
-      const url = await ref.getDownloadURL();
+    const { blob, contentType } = await compressImageCapped(file);
+    // hard cap to keep base64 doc under ~1MB
+    if (blob.size > 650 * 1024) {
       uploadStatus.textContent = '';
-      // normal path
+      throw new Error('Selected image is still too large after compression. Please choose a smaller image.');
+    }
+
+    const baseName = (file.name || 'receipt').replace(/[^a-z0-9._-]/gi,'_');
+    const filename = `${Date.now()}-${baseName}`.replace(/\.+/g,'.');
+
+    try {
+      const url = await uploadViaFirebase(blob, filename, contentType);
+      uploadStatus.textContent = '';
       fallbackNotice.classList.add('hidden');
-      return { url, inline: false };
-    } catch (err) {
-      // If network blocks Storage, use inline data URL so the app still works
-      const msg = (err && err.message) ? err.message : String(err);
-      if (msg.includes('retry-limit-exceeded') || msg.includes('network') || msg.includes('Failed to fetch')) {
+      return url; // normal Storage URL
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      // Network/timeout → inline fallback
+      if (msg.includes('retry-limit-exceeded') || msg.toLowerCase().includes('network') || msg.includes('Failed to fetch')) {
         const dataUrl = await blobToDataURL(blob);
         uploadStatus.textContent = '';
         fallbackNotice.classList.remove('hidden');
-        return { url: dataUrl, inline: true };
+        return dataUrl; // inline data URL stored in Firestore
       }
       uploadStatus.textContent = '';
-      throw err; // other errors bubble up (e.g., unauthorized)
+      throw e; // other errors (e.g., Storage rules) bubble up
     }
   }
 
@@ -263,18 +279,14 @@
 
     try {
       if (file && file.size) {
-        const res = await uploadImageSmart(file);  // may fall back to data URL
-        imageURL = res.url;
+        imageURL = await uploadImageSmart(file);
       }
-
       const now = firebase.firestore.FieldValue.serverTimestamp();
       const entry = {
-        id: uid(),
-        person, amount, note, date, image: imageURL,
+        id: uid(), person, amount, note, date, image: imageURL,
         uid: user.uid, email: user.email, displayName: user.displayName || '',
         createdAt: now, updatedAt: now
       };
-
       await expensesRef.doc(entry.id).set(entry);
       ev.target.reset();
       dateInput.value = todayStr();
@@ -285,8 +297,6 @@
       const msg = e && e.message ? e.message : String(e);
       if (msg.includes('permission') || msg.includes('storage/unauthorized')) {
         authError.textContent = 'Upload blocked by Storage rules. Ensure rules allow request.auth != null and you are signed in.';
-      } else if (msg.includes('No default bucket') || msg.includes('storage bucket')) {
-        authError.textContent = 'Storage bucket not initialized. Firebase Console → Build → Storage → “Get started”.';
       } else {
         authError.textContent = 'Image upload failed: ' + msg;
       }
@@ -340,7 +350,12 @@
     `).join('');
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",
+      ">":"&gt;","\"":"&quot;","'":"&#39;"
+    }[c]));
+  }
 </script>
 </body>
 </html>
