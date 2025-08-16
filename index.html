@@ -6,31 +6,23 @@
   <title>Shared Expense Tracker (Firebase + Google Login)</title>
   <style>
     :root{
-      --bg1:#0b1020; --bg2:#0e1737; --panel:#121a3e; --muted:#a7b0d6; --text:#eaf0ff;
-      --accent:#7ab6ff; --accent2:#8ef0c7; --danger:#ff7b7b; --border:rgba(255,255,255,.12);
-      --radius:16px;
+      --panel:#ffffff; --muted:#6b7280; --text:#111827; --accent:#2563eb; --danger:#ef4444; --border:#e5e7eb; --radius:14px;
     }
     *{box-sizing:border-box}
-    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; color:var(--text);
-      background:
-        radial-gradient(1200px 600px at -10% -10%, #1e2a68 0%, rgba(30,42,104,0) 60%),
-        radial-gradient(800px 500px at 110% -20%, #133a5c 0%, rgba(19,58,92,0) 60%),
-        linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
-      min-height:100vh;
-    }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; color:var(--text); background:#fff; }
     .wrap{max-width:1100px; margin:0 auto; padding:24px 16px 48px}
     header.topbar{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
     .brand{ font-weight:800; letter-spacing:.3px; font-size:20px }
     .auth{ display:flex; align-items:center; gap:8px }
     .muted{ color:var(--muted); font-size:12px }
     button{ appearance:none; border:none; border-radius:12px; padding:10px 14px; font-weight:600; cursor:pointer }
-    .btn{ background:#1a2452; color:var(--text); border:1px solid var(--border); }
-    .btn-primary{ background:linear-gradient(90deg, var(--accent), #9cc3ff); color:#06112a }
-    .btn-danger{ background:linear-gradient(90deg, #ff9a9a, var(--danger)); color:#2a0707 }
+    .btn{ background:#f3f4f6; color:var(--text); border:1px solid var(--border); }
+    .btn-primary{ background:linear-gradient(90deg, #60a5fa, #3b82f6); color:#0b1020 }
+    .btn-danger{ background:linear-gradient(90deg, #fca5a5, #ef4444); color:#fff }
     .btn-ghost{ background:transparent; color:var(--text); border:1px solid var(--border) }
     .stack{ display:flex; align-items:center; gap:8px; flex-wrap:wrap }
 
-    .card{ background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:var(--radius); backdrop-filter: blur(8px); box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+    .card{ background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow: 0 2px 14px rgba(0,0,0,.04); }
     .card .body{ padding:16px }
 
     form.grid{ display:grid; grid-template-columns:repeat(12,1fr); gap:12px }
@@ -38,17 +30,17 @@
     @media(min-width:760px){ .col-3{grid-column:span 3} .col-4{grid-column:span 4} .col-5{grid-column:span 5} .col-6{grid-column:span 6} }
 
     input[type="text"], input[type="number"], input[type="date"], input[type="file"]{
-      width:100%; background:#0f1636; color:var(--text); border:1px solid #263364; border-radius:12px; padding:10px 12px; outline:none;
+      width:100%; background:#fff; color:var(--text); border:1px solid #d1d5db; border-radius:12px; padding:10px 12px; outline:none;
     }
-    input::file-selector-button{ background:#1a2452; color:var(--text); border:none; padding:8px 10px; border-radius:10px; margin-right:8px }
+    input::file-selector-button{ background:#f3f4f6; color:var(--text); border:1px solid var(--border); padding:8px 10px; border-radius:10px; margin-right:8px }
 
-    table{ width:100%; border-collapse:separate; border-spacing:0; min-width:760px; background:#0f1634; border-radius:12px; overflow:hidden }
-    thead th{ position:sticky; top:0; background:#0f1b46; text-align:left; font-size:12px; color:var(--muted); padding:12px; }
-    tbody td{ padding:12px; border-top:1px solid var(--border); vertical-align:top }
+    table{ width:100%; border-collapse:separate; border-spacing:0; min-width:760px; background:#fff; border-radius:12px; overflow:hidden; border:1px solid var(--border) }
+    thead th{ position:sticky; top:0; background:#f9fafb; text-align:left; font-size:12px; color:#374151; padding:12px; border-bottom:1px solid var(--border) }
+    tbody td{ padding:12px; border-top:1px solid var(--border); vertical-align:top; color:#111827 }
     .thumb{ width:56px; height:56px; object-fit:cover; border-radius:10px; border:1px solid var(--border) }
 
-    .error{ color:#ffb3b3; font-size:12px; margin:6px 0 }
-    .note{ color:#1a270f; background:#def7c5; border:1px solid #b9e6a5; padding:8px 10px; border-radius:10px; font-size:12px }
+    .error{ color:#b91c1c; font-size:12px; margin:6px 0 }
+    .note{ color:#1f2937; background:#fef3c7; border:1px solid #fde68a; padding:8px 10px; border-radius:10px; font-size:12px }
     .hidden{ display:none }
   </style>
 
@@ -121,18 +113,13 @@
       <div class="body" style="overflow:auto">
         <div class="stack" style="justify-content:space-between">
           <div class="brand" style="font-size:16px">History</div>
-          <div class="muted">Shows who changed what, and when</div>
+          <div class="muted">Recent activity</div>
         </div>
         <table>
           <thead>
             <tr>
               <th>When</th>
-              <th>Who</th>
               <th>Action</th>
-              <th>Person</th>
-              <th>Amount</th>
-              <th>Note</th>
-              <th>Changed Fields</th>
             </tr>
           </thead>
           <tbody id="historyBody"></tbody>
@@ -297,10 +284,10 @@
     const changed = diffFields(before||{}, after||{});
     const base = {
       id: uid(), expenseId, action,
-      person: (after?.person ?? before?.person) || '',
-      amount: Number(after?.amount ?? before?.amount ?? 0),
-      note: (after?.note ?? before?.note) || '',
-      date: (after?.date ?? before?.date) || '',
+      person: (after?.person ⁠?? before?.person) || '',
+      amount: Number(after?.amount ⁠?? before?.amount ⁠?? 0),
+      note: (after?.note ⁠?? before?.note) || '',
+      date: (after?.date ⁠?? before?.date) || '',
       byUid: user.uid, byEmail: user.email, byName: user.displayName || '',
       at: now, changed
     };
@@ -399,12 +386,7 @@
     historyBody.innerHTML = activity.map(a=>`
       <tr>
         <td>${fmtDateTime(a.at)}</td>
-        <td>${escapeHtml(a.byName||a.byEmail||'')}</td>
         <td>${escapeHtml(a.action)}</td>
-        <td>${escapeHtml(a.person||'')}</td>
-        <td>${Number(a.amount||0).toFixed(2)}</td>
-        <td>${escapeHtml(a.note||'')}</td>
-        <td>${(a.changed||[]).join(', ')}</td>
       </tr>
     `).join('');
   }
