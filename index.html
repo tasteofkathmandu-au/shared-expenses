@@ -36,13 +36,11 @@
     .section-title { margin: 22px 0 8px; font-size: 18px; }
     .toolbar { display:flex; align-items:center; gap:10px; margin:10px 0 20px; }
   </style>
-
   <!-- Firebase SDKs (compat) -->
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
-
   <!-- XLSX for Excel import/export -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
@@ -334,16 +332,44 @@
     // --- Import / Export (Excel)
     function exportToExcel(){
       try {
-        const data = entries.map(e => ({
-          Person: e.person || '',
-          Amount: Number(e.amount || 0),
-          Note: e.note || '',
-          Date: e.date || '',
-          ReceiptURL: e.image || '',
-          EntryID: e.id || '',
-          CreatedBy: e.displayName || e.email || ''
-        }));
-        const ws = XLSX.utils.json_to_sheet(data);
+        // Excel cell hard limit: 32,767 chars. Avoid embedding long data URLs, cap text.
+        const MAX = 32760;
+        const safe = (s='') => {
+          s = String(s ?? '');
+          return s.length > MAX ? s.slice(0, MAX-3) + '...' : s;
+        };
+
+        const links = [];
+        const rows = entries.map(e => {
+          const url = e.image || '';
+          const isData = /^data:/i.test(url);
+          links.push(isData ? '' : url);
+          return {
+            Person: safe(e.person),
+            Amount: Number(e.amount || 0),
+            Note: safe(e.note),
+            Date: safe(e.date),
+            Receipt: isData ? '' : 'Open',
+            EntryID: safe(e.id),
+            CreatedBy: safe(e.displayName || e.email || '')
+          };
+        });
+
+        const ws = XLSX.utils.json_to_sheet(rows);
+
+        // Add hyperlinks to Receipt column (index 4)
+        const receiptColIdx = 4;
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        for (let r = range.s.r + 1; r <= range.e.r; r++) { // skip header
+          const link = links[r - (range.s.r + 1)];
+          if (!link) continue;
+          if (link.length > 2048) continue; // keep reasonable
+          const addr = XLSX.utils.encode_cell({ r, c: receiptColIdx });
+          const cell = ws[addr] || { t: 's', v: 'Open' };
+          cell.l = { Target: link, Tooltip: 'Open receipt' };
+          ws[addr] = cell;
+        }
+
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Expenses');
         XLSX.writeFile(wb, 'expenses_' + (new Date().toISOString().slice(0,10)) + '.xlsx');
@@ -401,7 +427,6 @@
             }
             return '';
           };
-
           const person = String(get(['Person','Name'])).trim();
           const amountVal = get(['Amount']);
           const amount = Number(typeof amountVal === 'string' ? amountVal.replace(/[^0-9.\-]/g,'') : amountVal) || 0;
@@ -417,16 +442,14 @@
           const now = firebase.firestore.FieldValue.serverTimestamp();
           const id = idFromSheet || uid();
           const docRef = expensesRef.doc(id);
-          batch.set(docRef, {
-            id, person, amount, note, date, image,
-            uid: auth.currentUser?.uid || '',
-            email: auth.currentUser?.email || '',
-            displayName: auth.currentUser?.displayName || '',
-            updatedAt: now,
-            createdAt: now
-          }, { merge: true });
+          batch.set(docRef, { id, person, amount, note, date, image,
+                              uid: auth.currentUser?.uid || '',
+                              email: auth.currentUser?.email || '',
+                              displayName: auth.currentUser?.displayName || '',
+                              updatedAt: now,
+                              createdAt: now }, { merge: true });
           ops++; added++;
-          if (ops >= 400) { await flush(); } // stay under 500 writes/batch
+          if (ops >= 400) { await flush(); }
         }
         await flush();
         importStatus.textContent = 'Imported ' + added + ' row(s).';
