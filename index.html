@@ -5,21 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Shared Expense Tracker (Firebase + Google Login)</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-    h1 { margin: 0 0 12px 0; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
-    .auth { display:flex; align-items:center; gap:8px; }
-    .muted { color:#666; font-size:12px; }
-    form { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 20px; }
-    input, button { padding: 8px; }
-    table { width: 100%; border-collapse: collapse; background: white; }
-    th, td { padding: 8px; border: 1px solid #ccc; text-align: left; }
-    th { background: #eee; }
-    a { color: blue; }
-    .hidden { display:none; }
-    .thumb { width:48px; height:48px; object-fit:cover; border-radius:6px; border:1px solid #ddd; }
-    .error { color:#b00020; font-size:12px; margin:6px 0; }
-    .note  { color:#664d03; background:#fff3cd; border:1px solid #ffecb5; padding:6px 8px; border-radius:6px; font-size:12px; }
+    :root{
+      --bg1:#0b1020; --bg2:#0e1737; --panel:#121a3e; --muted:#a7b0d6; --text:#eaf0ff;
+      --accent:#7ab6ff; --accent2:#8ef0c7; --danger:#ff7b7b; --border:rgba(255,255,255,.12);
+      --radius:16px;
+    }
+    *{box-sizing:border-box}
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial; color:var(--text);
+      background:
+        radial-gradient(1200px 600px at -10% -10%, #1e2a68 0%, rgba(30,42,104,0) 60%),
+        radial-gradient(800px 500px at 110% -20%, #133a5c 0%, rgba(19,58,92,0) 60%),
+        linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+      min-height:100vh;
+    }
+    .wrap{max-width:1100px; margin:0 auto; padding:24px 16px 48px}
+    header.topbar{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+    .brand{ font-weight:800; letter-spacing:.3px; font-size:20px }
+    .auth{ display:flex; align-items:center; gap:8px }
+    .muted{ color:var(--muted); font-size:12px }
+    button{ appearance:none; border:none; border-radius:12px; padding:10px 14px; font-weight:600; cursor:pointer }
+    .btn{ background:#1a2452; color:var(--text); border:1px solid var(--border); }
+    .btn-primary{ background:linear-gradient(90deg, var(--accent), #9cc3ff); color:#06112a }
+    .btn-danger{ background:linear-gradient(90deg, #ff9a9a, var(--danger)); color:#2a0707 }
+    .btn-ghost{ background:transparent; color:var(--text); border:1px solid var(--border) }
+    .stack{ display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+
+    .card{ background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:var(--radius); backdrop-filter: blur(8px); box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+    .card .body{ padding:16px }
+
+    form.grid{ display:grid; grid-template-columns:repeat(12,1fr); gap:12px }
+    .col-12{ grid-column: span 12 }
+    @media(min-width:760px){ .col-3{grid-column:span 3} .col-4{grid-column:span 4} .col-5{grid-column:span 5} .col-6{grid-column:span 6} }
+
+    input[type="text"], input[type="number"], input[type="date"], input[type="file"]{
+      width:100%; background:#0f1636; color:var(--text); border:1px solid #263364; border-radius:12px; padding:10px 12px; outline:none;
+    }
+    input::file-selector-button{ background:#1a2452; color:var(--text); border:none; padding:8px 10px; border-radius:10px; margin-right:8px }
+
+    table{ width:100%; border-collapse:separate; border-spacing:0; min-width:760px; background:#0f1634; border-radius:12px; overflow:hidden }
+    thead th{ position:sticky; top:0; background:#0f1b46; text-align:left; font-size:12px; color:var(--muted); padding:12px; }
+    tbody td{ padding:12px; border-top:1px solid var(--border); vertical-align:top }
+    .thumb{ width:56px; height:56px; object-fit:cover; border-radius:10px; border:1px solid var(--border) }
+
+    .error{ color:#ffb3b3; font-size:12px; margin:6px 0 }
+    .note{ color:#1a270f; background:#def7c5; border:1px solid #b9e6a5; padding:8px 10px; border-radius:10px; font-size:12px }
+    .hidden{ display:none }
   </style>
 
   <!-- Firebase SDKs (compat) -->
@@ -28,52 +58,66 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
+  <!-- SheetJS for Excel export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+  <main class="wrap">
+    <header class="topbar">
+      <div class="brand">💸 Shared Expense Tracker</div>
+      <div class="stack">
+        <button id="exportBtn" class="btn">Export Excel</button>
+        <span id="userInfo" class="muted hidden"></span>
+        <button id="signInBtn" class="btn-primary">Sign in with Google</button>
+        <button id="signOutBtn" class="btn hidden">Sign out</button>
+      </div>
+    </header>
 
-  <div class="topbar">
-    <h1>💸 Shared Expense Tracker</h1>
-    <div class="auth">
-      <span id="userInfo" class="muted hidden"></span>
-      <button id="signInBtn">Sign in with Google</button>
-      <button id="signOutBtn" class="hidden">Sign out</button>
-    </div>
-  </div>
+    <div id="authError" class="error"></div>
+    <div id="signedOutMsg" class="muted">Please sign in to view and edit shared expenses.</div>
 
-  <div id="authError" class="error"></div>
-  <div id="signedOutMsg" class="muted">Please sign in to view and edit shared expenses.</div>
+    <section id="app" class="hidden card">
+      <div class="body">
+        <form id="entryForm" class="grid">
+          <div class="col-12 muted" id="uploadStatus"></div>
+          <div class="col-4"><input id="person" name="person" placeholder="Person" required type="text" /></div>
+          <div class="col-3"><input id="amount" name="amount" type="number" step="0.01" placeholder="Amount" required /></div>
+          <div class="col-3"><input id="date" name="date" type="date" required /></div>
+          <div class="col-12"><input id="note" name="note" placeholder="Note" type="text" /></div>
+          <div class="col-6"><input id="image" name="image" type="file" accept="image/*" /></div>
+          <div class="col-6 stack" style="justify-content:flex-end">
+            <label id="removeImageWrap" class="hidden"><input type="checkbox" id="removeImageChk" /> Remove image</label>
+            <button type="button" id="cancelEditBtn" class="btn hidden">Cancel</button>
+            <button type="submit" id="submitBtn" class="btn-primary">Add</button>
+          </div>
+        </form>
 
-  <div id="app" class="hidden">
-    <form id="entryForm">
-      <div id="uploadStatus" class="muted"></div>
-      <input id="person" name="person" placeholder="Person" required />
-      <input id="amount" name="amount" type="number" step="0.01" placeholder="Amount" required />
-      <input id="date" name="date" type="date" required />
-      <input id="note" name="note" placeholder="Note" />
-      <input id="image" name="image" type="file" accept="image/*" />
-      <button type="submit">Add</button>
-    </form>
+        <div id="fallbackNotice" class="note hidden">Network blocked Firebase Storage. Saved image inside Firestore (base64). Very large photos may be rejected.</div>
+      </div>
+    </section>
 
-    <div id="fallbackNotice" class="note hidden">Network blocked Firebase Storage. Saved image inside Firestore (base64). Very large photos may be rejected.</div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Receipt</th>
-          <th>Person</th>
-          <th>Amount</th>
-          <th>Note</th>
-          <th>Date</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="tbody"></tbody>
-    </table>
-
-    <div style="margin-top:10px">
-      <button id="resetBtn">Reset All</button>
-    </div>
-  </div>
+    <section class="card" style="margin-top:16px">
+      <div class="body" style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Receipt</th>
+              <th>Person</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="stack" style="margin-top:12px; justify-content:space-between">
+          <div class="muted">Tip: click a thumbnail to open full image.</div>
+          <button id="resetBtn" class="btn-danger">Reset All</button>
+        </div>
+      </div>
+    </section>
+  </main>
 
 <script>
   // === Firebase Config ===
@@ -91,7 +135,6 @@
   const auth = firebase.auth();
   const db = firebase.firestore();
   const storage = firebase.storage();
-  // keep Firebase retries short so we can fallback quickly if Storage is blocked
   storage.setMaxUploadRetryTime(20000);
   storage.setMaxOperationRetryTime(20000);
 
@@ -110,20 +153,23 @@
   const dateInput = document.getElementById('date');
   const uploadStatus = document.getElementById('uploadStatus');
   const fallbackNotice = document.getElementById('fallbackNotice');
+  const exportBtn = document.getElementById('exportBtn');
+  const submitBtn = document.getElementById('submitBtn');
+  const cancelEditBtn = document.getElementById('cancelEditBtn');
+  const removeImageWrap = document.getElementById('removeImageWrap');
+  const removeImageChk = document.getElementById('removeImageChk');
 
   let entries = [];
   let unsubscribe = null;
+  let editingId = null; // if set, we're editing this doc
 
   function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function todayStr(){ return new Date().toISOString().slice(0,10); }
   dateInput.value = todayStr();
 
-  // --- Auth (popup with redirect fallback)
+  // --- Auth
   const provider = new firebase.auth.GoogleAuthProvider();
-  async function signInWithGoogle() {
-    try { await auth.signInWithPopup(provider); }
-    catch (err) { await auth.signInWithRedirect(provider); }
-  }
+  async function signInWithGoogle() { try { await auth.signInWithPopup(provider); } catch (err) { await auth.signInWithRedirect(provider); } }
   signInBtn.addEventListener('click', async ()=>{ authError.textContent = ''; try { await signInWithGoogle(); } catch(e){ authError.textContent = 'Sign-in error: ' + (e?.message||e); }});
   signOutBtn.addEventListener('click', async ()=>{ authError.textContent = ''; try { await auth.signOut(); } catch(e){ authError.textContent = 'Sign-out error: ' + (e?.message||e); }});
   auth.getRedirectResult().catch(e=>{ authError.textContent = 'Sign-in error: ' + (e?.message || e); });
@@ -158,204 +204,154 @@
   });
 
   // === Image helpers (inline fallback) ===
-  // compress to keep Firestore doc safely < 1MB (base64 adds ~33%)
   async function compressImageCapped(file, maxDimStart = 1280, targetBytes = 650 * 1024) {
     const dimOptions = [maxDimStart, 1100, 1000, 900, 800];
     const qualityOptions = [0.8, 0.7, 0.6, 0.5, 0.4];
-
-    function drawAndBlob(img, w, h, quality) {
-      return new Promise((resolve) => {
-        const c = document.createElement('canvas');
-        c.width = w; c.height = h;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        c.toBlob(b => resolve(b), 'image/jpeg', quality);
-      });
-    }
-    function loadImage(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        const img = new Image();
-        reader.onerror = () => reject(new Error('read-failed'));
-        img.onerror = () => reject(new Error('image-failed'));
-        reader.onload = () => { img.src = reader.result; };
-        img.onload = () => resolve(img);
-        reader.readAsDataURL(file);
-      });
-    }
-
-    try {
+    function drawAndBlob(img, w, h, q){ return new Promise((res)=>{ const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d'); ctx.drawImage(img,0,0,w,h); c.toBlob(b=>res(b),'image/jpeg',q); }); }
+    function loadImage(file){ return new Promise((res,rej)=>{ const r=new FileReader(), img=new Image(); r.onerror=()=>rej(new Error('read-failed')); img.onerror=()=>rej(new Error('image-failed')); r.onload=()=>{ img.src=r.result; }; img.onload=()=>res(img); r.readAsDataURL(file); }); }
+    try{
       const img = await loadImage(file);
-      for (const dim of dimOptions) {
-        let { width, height } = img;
-        if (width > height && width > dim) { height = Math.round(height * (dim / width)); width = dim; }
-        else if (height >= width && height > dim) { width = Math.round(width * (dim / height)); height = dim; }
-        for (const q of qualityOptions) {
-          const blob = await drawAndBlob(img, width, height, q);
-          if (blob && blob.size <= targetBytes) {
-            return { blob, contentType: 'image/jpeg' };
-          }
+      for (const dim of dimOptions){
+        let {width,height} = img;
+        if (width > height && width > dim){ height = Math.round(height * (dim/width)); width = dim; }
+        else if (height >= width && height > dim){ width = Math.round(width * (dim/height)); height = dim; }
+        for (const q of qualityOptions){
+          const blob = await drawAndBlob(img,width,height,q);
+          if (blob && blob.size <= targetBytes) return { blob, contentType:'image/jpeg' };
         }
       }
-    } catch (_) { /* fall through */ }
-    return { blob: file, contentType: file.type || 'application/octet-stream' };
+    }catch(_){ }
+    return { blob:file, contentType:file.type || 'application/octet-stream' };
   }
-
-  function blobToDataURL(blob){
-    return new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onerror = rej; r.onload = () => res(r.result);
-      r.readAsDataURL(blob);
-    });
-  }
-
+  function blobToDataURL(blob){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onerror=rej; r.onload=()=>res(r.result); r.readAsDataURL(blob); }); }
   async function uploadViaFirebase(blob, filename, contentType){
     const ref = storage.ref(`receipts/${filename}`);
     const metadata = { contentType };
     return new Promise((resolve, reject) => {
       const task = ref.put(blob, metadata);
-      task.on('state_changed',
-        (snap) => {
-          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-          uploadStatus.textContent = `Uploading… ${pct}%`;
-        },
-        reject,
-        async () => { const url = await ref.getDownloadURL(); resolve(url); }
-      );
+      task.on('state_changed', (snap)=>{
+        const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+        uploadStatus.textContent = `Uploading… ${pct}%`;
+      }, reject, async ()=>{ const url = await ref.getDownloadURL(); resolve(url); });
     });
   }
-
-  // Try Firebase Storage; on network timeouts, fall back to inline base64 in Firestore
   async function uploadImageSmart(file){
     uploadStatus.textContent = 'Preparing image…';
-
     const { blob, contentType } = await compressImageCapped(file);
-    // hard cap to keep base64 doc under ~1MB
-    if (blob.size > 650 * 1024) {
-      uploadStatus.textContent = '';
-      throw new Error('Selected image is still too large after compression. Please choose a smaller image.');
-    }
-
+    if (blob.size > 650 * 1024){ uploadStatus.textContent=''; throw new Error('Selected image is still too large after compression. Please choose a smaller image.'); }
     const baseName = (file.name || 'receipt').replace(/[^a-z0-9._-]/gi,'_');
     const filename = `${Date.now()}-${baseName}`.replace(/\.+/g,'.');
-
-    try {
+    try{
       const url = await uploadViaFirebase(blob, filename, contentType);
-      uploadStatus.textContent = '';
-      fallbackNotice.classList.add('hidden');
-      return url; // normal Storage URL
-    } catch (e) {
+      uploadStatus.textContent = ''; fallbackNotice.classList.add('hidden'); return url;
+    }catch(e){
       const msg = (e && e.message) ? e.message : String(e);
-      // Network/timeout → inline fallback
-      if (msg.includes('retry-limit-exceeded') || msg.toLowerCase().includes('network') || msg.includes('Failed to fetch')) {
+      if (msg.includes('retry-limit-exceeded') || msg.toLowerCase().includes('network') || msg.includes('Failed to fetch')){
         const dataUrl = await blobToDataURL(blob);
-        uploadStatus.textContent = '';
-        fallbackNotice.classList.remove('hidden');
-        return dataUrl; // inline data URL stored in Firestore
+        uploadStatus.textContent = ''; fallbackNotice.classList.remove('hidden'); return dataUrl;
       }
-      uploadStatus.textContent = '';
-      throw e; // other errors (e.g., Storage rules) bubble up
+      uploadStatus.textContent = ''; throw e;
     }
   }
 
-  // --- Create entry
-  entryForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    authError.textContent = '';
-    const user = auth.currentUser;
-    if(!user){ authError.textContent = 'Please sign in first.'; return; }
-
+  // --- Add / Edit entry
+  entryForm.addEventListener('submit', async (ev)=>{
+    ev.preventDefault(); authError.textContent='';
+    const user = auth.currentUser; if (!user){ authError.textContent='Please sign in first.'; return; }
     const fd = new FormData(ev.target);
     const person = (fd.get('person')||'').toString().trim();
     const amount = Number(fd.get('amount')||0);
     const note = (fd.get('note')||'').toString();
     const date = (fd.get('date')||todayStr()).toString();
-
-    let imageURL = null;
     const file = fd.get('image');
 
-    const submitBtn = entryForm.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
-
-    try {
-      if (file && file.size) {
-        imageURL = await uploadImageSmart(file);
+    try{
+      if (!editingId){
+        // CREATE
+        let imageURL=null; if (file && file.size) imageURL = await uploadImageSmart(file);
+        const now = firebase.firestore.FieldValue.serverTimestamp();
+        const id = uid();
+        await expensesRef.doc(id).set({ id, person, amount, note, date, image:imageURL, uid:user.uid, email:user.email, displayName:user.displayName||'', createdAt:now, updatedAt:now });
+      } else {
+        // UPDATE
+        const now = firebase.firestore.FieldValue.serverTimestamp();
+        const original = entries.find(e=>e.id===editingId) || {};
+        let imageURL = original.image || null;
+        if (removeImageChk.checked) imageURL = null; // explicit remove
+        if (file && file.size) imageURL = await uploadImageSmart(file); // replace
+        await expensesRef.doc(editingId).set({ person, amount, note, date, image:imageURL, updatedAt:now }, { merge:true });
       }
-      const now = firebase.firestore.FieldValue.serverTimestamp();
-      const entry = {
-        id: uid(), person, amount, note, date, image: imageURL,
-        uid: user.uid, email: user.email, displayName: user.displayName || '',
-        createdAt: now, updatedAt: now
-      };
-      await expensesRef.doc(entry.id).set(entry);
-      ev.target.reset();
-      dateInput.value = todayStr();
-      uploadStatus.textContent = '';
-      submitBtn.disabled = false;
-    } catch (e) {
+      // reset UI
+      entryForm.reset(); dateInput.value = todayStr();
+      endEditMode();
+    }catch(e){
       console.error(e);
       const msg = e && e.message ? e.message : String(e);
-      if (msg.includes('permission') || msg.includes('storage/unauthorized')) {
-        authError.textContent = 'Upload blocked by Storage rules. Ensure rules allow request.auth != null and you are signed in.';
-      } else {
-        authError.textContent = 'Image upload failed: ' + msg;
-      }
-      uploadStatus.textContent = '';
-      submitBtn.disabled = false;
+      if (msg.includes('permission') || msg.includes('storage/unauthorized')) authError.textContent = 'Upload blocked by Storage rules. Ensure rules allow request.auth != null and you are signed in.';
+      else authError.textContent = 'Save error: ' + msg;
+    } finally { uploadStatus.textContent=''; submitBtn.disabled=false; }
+  });
+
+  // --- Table actions (Edit/Delete)
+  tbody.addEventListener('click', async (ev)=>{
+    const btn = ev.target.closest('button'); if(!btn) return;
+    const id = btn.getAttribute('data-id'); const action = btn.getAttribute('data-action');
+    if (action==='delete'){
+      try{ if (confirm('Delete this entry?')) await expensesRef.doc(id).delete(); }
+      catch(e){ console.error(e); authError.textContent = 'Delete error: ' + (e?.message||e); }
+    }
+    if (action==='edit'){
+      const e = entries.find(x=>x.id===id); if(!e) return;
+      editingId = id;
+      document.getElementById('person').value = e.person || '';
+      document.getElementById('amount').value = Number(e.amount||0);
+      document.getElementById('date').value = e.date || todayStr();
+      document.getElementById('note').value = e.note || '';
+      removeImageChk.checked = false;
+      beginEditMode();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   });
 
-  // --- Delete entry
-  tbody.addEventListener('click', async (ev) => {
-    const btn = ev.target.closest('button');
-    if (!btn) return;
-    const id = btn.getAttribute('data-id');
-    const action = btn.getAttribute('data-action');
-    if (action === 'delete') {
-      try {
-        if (confirm('Delete this entry?')) await expensesRef.doc(id).delete();
-      } catch (e) {
-        console.error(e);
-        authError.textContent = 'Delete error: ' + (e?.message || e);
-      }
-    }
-  });
+  function beginEditMode(){ submitBtn.textContent='Update'; cancelEditBtn.classList.remove('hidden'); removeImageWrap.classList.remove('hidden'); }
+  function endEditMode(){ editingId=null; submitBtn.textContent='Add'; cancelEditBtn.classList.add('hidden'); removeImageWrap.classList.add('hidden'); removeImageChk.checked=false; }
+  cancelEditBtn.addEventListener('click', ()=>{ entryForm.reset(); dateInput.value=todayStr(); endEditMode(); });
 
   // --- Reset (delete all)
-  resetBtn.addEventListener('click', async () => {
-    try {
-      if (confirm('Clear all entries?')) {
-        const snap = await expensesRef.get();
-        const batch = db.batch();
-        snap.forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
-      }
-    } catch (e) {
-      console.error(e);
-      authError.textContent = 'Reset error: ' + (e?.message || e);
-    }
+  resetBtn.addEventListener('click', async ()=>{
+    try{ if (confirm('Clear all entries?')){ const snap = await expensesRef.get(); const batch = db.batch(); snap.forEach(doc=>batch.delete(doc.ref)); await batch.commit(); } }
+    catch(e){ console.error(e); authError.textContent = 'Reset error: ' + (e?.message||e); }
   });
 
   // --- Render table
-  function render() {
-    tbody.innerHTML = entries.map(e => `
+  function render(){
+    tbody.innerHTML = entries.map(e=>`
       <tr>
-        <td>${e.image ? `<a href="${e.image}" target="_blank"><img class="thumb" src="${e.image}" alt="receipt"></a>` : '—'}</td>
+        <td>${e.image ? `<a href="${e.image}" target="_blank" rel="noopener"><img class="thumb" src="${e.image}" alt="receipt"></a>` : '—'}</td>
         <td>${escapeHtml(e.person)}</td>
         <td>${Number(e.amount||0).toFixed(2)}</td>
         <td>${escapeHtml(e.note||'')}</td>
         <td>${escapeHtml(e.date||'')}</td>
-        <td><button data-action="delete" data-id="${e.id}">Delete</button></td>
+        <td class="stack"><button class="btn" data-action="edit" data-id="${e.id}">Edit</button><button class="btn-danger" data-action="delete" data-id="${e.id}">Delete</button></td>
       </tr>
     `).join('');
   }
 
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, c => ({
-      "&":"&amp;","<":"&lt;",
-      ">":"&gt;","\"":"&quot;","'":"&#39;"
-    }[c]));
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+  // --- Excel Export
+  function exportToExcel(){
+    try{
+      if (typeof XLSX === 'undefined') { alert('Excel library failed to load.'); return; }
+      const rows = entries.map(e=>({ id:e.id, person:e.person, amount:Number(e.amount||0), note:e.note||'', date:e.date||'', image:e.image||'' }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Expenses');
+      XLSX.writeFile(wb, `expenses-${new Date().toISOString().slice(0,10)}.xlsx`);
+    }catch(err){ console.error(err); alert('Export failed: '+(err?.message||err)); }
   }
+  exportBtn.addEventListener('click', exportToExcel);
 </script>
 </body>
 </html>
