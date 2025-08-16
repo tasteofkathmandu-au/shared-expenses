@@ -5,21 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Shared Expense Tracker (Firebase + Google Login)</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+    :root {
+      --surface: #ffffff;
+      --muted: #666;
+      --border: #e5e7eb;
+      --header: #f3f4f6;
+    }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: var(--surface); color:#111; }
     h1 { margin: 0 0 12px 0; }
+    h2 { margin: 20px 0 8px; font-size: 18px; }
     .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
     .auth { display:flex; align-items:center; gap:8px; }
-    .muted { color:#666; font-size:12px; }
+    .muted { color:var(--muted); font-size:12px; }
     form { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 20px; }
     input, button { padding: 8px; }
     table { width: 100%; border-collapse: collapse; background: white; }
-    th, td { padding: 8px; border: 1px solid #ccc; text-align: left; }
-    th { background: #eee; }
+    th, td { padding: 8px; border: 1px solid var(--border); text-align: left; font-size:14px; }
+    th { background: var(--header); }
     a { color: blue; }
     .hidden { display:none; }
     .thumb { width:48px; height:48px; object-fit:cover; border-radius:6px; border:1px solid #ddd; }
     .error { color:#b00020; font-size:12px; margin:6px 0; }
-    .note  { color:#664d03; background:#fff3cd; border:1px solid #ffecb5; padding:6px 8px; border-radius:6px; font-size:12px; }
+    .note  { color:#664d03; background:#fff8db; border:1px solid #ffef9e; padding:6px 8px; border-radius:6px; font-size:12px; }
+    .section { margin-top: 18px; }
   </style>
 
   <!-- Firebase SDKs (compat) -->
@@ -55,22 +63,34 @@
 
     <div id="fallbackNotice" class="note hidden">Network blocked uploads to Firebase Storage. I saved the image inside Firestore instead. Everything will still display normally.</div>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Receipt</th>
-          <th>Person</th>
-          <th>Amount</th>
-          <th>Note</th>
-          <th>Date</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="tbody"></tbody>
-    </table>
+    <div class="section">
+      <h2>Expenses</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Receipt</th>
+            <th>Person</th>
+            <th>Amount</th>
+            <th>Note</th>
+            <th>Date</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
 
-    <div style="margin-top:10px">
-      <button id="resetBtn">Reset All</button>
+    <div class="section">
+      <h2>Activity</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="activityTbody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -95,6 +115,7 @@
   storage.setMaxOperationRetryTime(45000);
 
   const expensesRef = db.collection("expenses");
+  const activityRef = db.collection("activity");
 
   // UI refs
   const app = document.getElementById('app');
@@ -105,13 +126,15 @@
   const authError = document.getElementById('authError');
   const tbody = document.getElementById('tbody');
   const entryForm = document.getElementById('entryForm');
-  const resetBtn = document.getElementById('resetBtn');
   const dateInput = document.getElementById('date');
   const uploadStatus = document.getElementById('uploadStatus');
   const fallbackNotice = document.getElementById('fallbackNotice');
+  const activityTbody = document.getElementById('activityTbody');
 
   let entries = [];
-  let unsubscribe = null;
+  let activities = [];
+  let unsubExpenses = null;
+  let unsubActivity = null;
 
   function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
   function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -141,14 +164,20 @@
       app.classList.remove('hidden');
       setFormEnabled(true);
 
-      if (unsubscribe) unsubscribe();
-      unsubscribe = expensesRef.orderBy("date","desc").onSnapshot(
-        snap=>{ entries = []; snap.forEach(doc => entries.push(doc.data())); render(); },
+      if (unsubExpenses) unsubExpenses();
+      if (unsubActivity) unsubActivity();
+      unsubExpenses = expensesRef.orderBy("date","desc").onSnapshot(
+        snap=>{ entries = []; snap.forEach(doc => entries.push(doc.data())); renderExpenses(); },
         err=>{ console.error(err); authError.textContent = 'Read error (Firestore rules/domain?): ' + (err?.message || err); }
       );
+      unsubActivity = activityRef.orderBy('when','desc').limit(100).onSnapshot(
+        snap=>{ activities = []; snap.forEach(doc => activities.push(doc.data())); renderActivity(); },
+        err=>{ console.error(err); authError.textContent = 'Activity read error: ' + (err?.message || err); }
+      );
     }else{
-      if (unsubscribe) unsubscribe();
-      entries = []; render();
+      if (unsubExpenses) unsubExpenses();
+      if (unsubActivity) unsubActivity();
+      entries = []; activities = []; renderExpenses(); renderActivity();
       userInfo.classList.add('hidden');
       signOutBtn.classList.add('hidden');
       signInBtn.classList.remove('hidden');
@@ -276,6 +305,17 @@
       };
 
       await expensesRef.doc(entry.id).set(entry);
+
+      // Activity log (display only when + action)
+      const actionText = `Added ${person ? person + ' – ' : ''}$${Number(amount||0).toFixed(2)}${note ? ' ('+note+')' : ''}`;
+      await activityRef.doc(uid()).set({
+        action: actionText,
+        when: firebase.firestore.FieldValue.serverTimestamp(),
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName || ''
+      });
+
       ev.target.reset();
       dateInput.value = todayStr();
       uploadStatus.textContent = '';
@@ -295,7 +335,7 @@
     }
   });
 
-  // --- Delete entry
+  // --- Delete entry (and log activity)
   tbody.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button');
     if (!btn) return;
@@ -303,7 +343,19 @@
     const action = btn.getAttribute('data-action');
     if (action === 'delete') {
       try {
-        if (confirm('Delete this entry?')) await expensesRef.doc(id).delete();
+        if (!confirm('Delete this entry?')) return;
+        const user = auth.currentUser;
+        const entry = entries.find(x => x.id === id);
+        await expensesRef.doc(id).delete();
+        // Activity log (display only when + action)
+        const actionText = `Deleted ${entry?.person ? entry.person + ' – ' : ''}$${Number(entry?.amount||0).toFixed(2)}${entry?.note ? ' ('+entry.note+')' : ''}`;
+        await activityRef.doc(uid()).set({
+          action: actionText,
+          when: firebase.firestore.FieldValue.serverTimestamp(),
+          uid: user?.uid || '',
+          email: user?.email || '',
+          displayName: user?.displayName || ''
+        });
       } catch (e) {
         console.error(e);
         authError.textContent = 'Delete error: ' + (e?.message || e);
@@ -311,23 +363,8 @@
     }
   });
 
-  // --- Reset (delete all)
-  resetBtn.addEventListener('click', async () => {
-    try {
-      if (confirm('Clear all entries?')) {
-        const snap = await expensesRef.get();
-        const batch = db.batch();
-        snap.forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
-      }
-    } catch (e) {
-      console.error(e);
-      authError.textContent = 'Reset error: ' + (e?.message || e);
-    }
-  });
-
-  // --- Render table
-  function render() {
+  // --- Render expenses
+  function renderExpenses() {
     tbody.innerHTML = entries.map(e => `
       <tr>
         <td>${e.image ? `<a href="${e.image}" target="_blank"><img class="thumb" src="${e.image}" alt="receipt"></a>` : '—'}</td>
@@ -338,6 +375,24 @@
         <td><button data-action="delete" data-id="${e.id}">Delete</button></td>
       </tr>
     `).join('');
+  }
+
+  // --- Render activity (When + Action only)
+  function renderActivity(){
+    activityTbody.innerHTML = activities.map(a => `
+      <tr>
+        <td>${formatWhen(a.when)}</td>
+        <td>${escapeHtml(a.action||'')}</td>
+      </tr>
+    `).join('');
+  }
+
+  function formatWhen(ts){
+    if (!ts) return '';
+    try {
+      const d = ts.toDate ? ts.toDate() : new Date(ts);
+      return d.toLocaleString();
+    } catch { return ''; }
   }
 
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
