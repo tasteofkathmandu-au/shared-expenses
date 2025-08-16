@@ -34,12 +34,17 @@
     .error { color:var(--err); font-size:12px; margin:6px 0; }
     .note { color:var(--warnText); background:var(--warnBg); border:1px solid var(--warnBorder); padding:6px 8px; border-radius:6px; font-size:12px; }
     .section-title { margin: 22px 0 8px; font-size: 18px; }
+    .toolbar { display:flex; align-items:center; gap:10px; margin:10px 0 20px; }
   </style>
+
   <!-- Firebase SDKs (compat) -->
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
+
+  <!-- XLSX for Excel import/export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <div class="topbar">
@@ -84,16 +89,13 @@
       <tbody id="tbody"></tbody>
     </table>
 
-    <div class="section-title">History</div>
-    <table>
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody id="historyBody"></tbody>
-    </table>
+    <div class="section-title">Tools</div>
+    <div class="toolbar">
+      <button id="exportBtn" type="button">Export to Excel</button>
+      <button id="importBtn" type="button">Import from Excel</button>
+      <input id="importFile" type="file" accept=".xlsx,.xls,.csv" class="hidden" />
+      <span id="importStatus" class="muted"></span>
+    </div>
   </div>
 
   <script>
@@ -112,12 +114,10 @@
     const auth = firebase.auth();
     const db = firebase.firestore();
     const storage = firebase.storage();
-    // keep uploads from hanging forever on shaky networks
     storage.setMaxUploadRetryTime(45000);
     storage.setMaxOperationRetryTime(45000);
 
     const expensesRef = db.collection("expenses");
-    const historyRef  = db.collection("history"); // simple audit log
 
     // UI refs
     const app = document.getElementById('app');
@@ -131,12 +131,15 @@
     const dateInput = document.getElementById('date');
     const uploadStatus = document.getElementById('uploadStatus');
     const fallbackNotice = document.getElementById('fallbackNotice');
-    const historyBody = document.getElementById('historyBody');
+
+    // Import/Export refs
+    const exportBtn = document.getElementById('exportBtn');
+    const importBtn = document.getElementById('importBtn');
+    const importFile = document.getElementById('importFile');
+    const importStatus = document.getElementById('importStatus');
 
     let entries = [];
-    let historyRows = [];
     let unsubscribe = null;
-    let unsubscribeHistory = null;
 
     function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
     function todayStr(){ return new Date().toISOString().slice(0,10); }
@@ -180,23 +183,13 @@
         setFormEnabled(true);
 
         if (unsubscribe) unsubscribe();
-        if (unsubscribeHistory) unsubscribeHistory();
-
         unsubscribe = expensesRef.orderBy("date","desc").onSnapshot(
           snap=>{ entries = []; snap.forEach(doc => entries.push(doc.data())); render(); },
           err=>{ console.error(err); authError.textContent = 'Read error (Firestore rules/domain?): ' + (err?.message || err); }
         );
-
-        // Listen to history (only show When + Action)
-        unsubscribeHistory = historyRef.orderBy('at','desc').limit(100).onSnapshot(
-          snap=>{ historyRows = []; snap.forEach(doc => historyRows.push(doc.data())); renderHistory(); },
-          err=>{ console.error(err); }
-        );
-
       } else {
         if (unsubscribe) unsubscribe();
-        if (unsubscribeHistory) unsubscribeHistory();
-        entries = []; historyRows = []; render(); renderHistory();
+        entries = []; render();
         userInfo.classList.add('hidden');
         signOutBtn.classList.add('hidden');
         signInBtn.classList.remove('hidden');
@@ -248,7 +241,6 @@
       const ref = storage.ref(`receipts/${safeName}`);
       const metadata = { contentType };
 
-      // attempt Storage upload with progress
       try {
         await new Promise((resolve, reject) => {
           const task = ref.put(blob, metadata);
@@ -259,11 +251,9 @@
         });
         const url = await ref.getDownloadURL();
         uploadStatus.textContent = '';
-        // normal path
         fallbackNotice.classList.add('hidden');
         return { url, inline: false };
       } catch (err) {
-        // If network blocks Storage, use inline data URL so the app still works
         const msg = (err && err.message) ? err.message : String(err);
         if (msg.includes('retry-limit-exceeded') || msg.includes('network') || msg.includes('Failed to fetch')) {
           const dataUrl = await blobToDataURL(blob);
@@ -272,14 +262,8 @@
           return { url: dataUrl, inline: true };
         }
         uploadStatus.textContent = '';
-        throw err; // other errors bubble up (e.g., unauthorized)
+        throw err;
       }
-    }
-
-    // --- History helper
-    async function writeHistory(action, entryId){
-      try { await historyRef.add({ action, at: firebase.firestore.FieldValue.serverTimestamp(), entryId }); }
-      catch(e){ console.warn('History write failed:', e); }
     }
 
     // --- Create entry
@@ -302,13 +286,14 @@
 
       try {
         if (file && file.size) {
-          const res = await uploadImageSmart(file); // may fall back to data URL
+          const res = await uploadImageSmart(file);
           imageURL = res.url;
         }
         const now = firebase.firestore.FieldValue.serverTimestamp();
-        const entry = { id: uid(), person, amount, note, date, image: imageURL, uid: user.uid, email: user.email, displayName: user.displayName || '', createdAt: now, updatedAt: now };
+        const entry = { id: uid(), person, amount, note, date, image: imageURL,
+                        uid: user.uid, email: user.email, displayName: user.displayName || '',
+                        createdAt: now, updatedAt: now };
         await expensesRef.doc(entry.id).set(entry);
-        await writeHistory('Added expense', entry.id);
         ev.target.reset();
         dateInput.value = todayStr();
         uploadStatus.textContent = '';
@@ -338,7 +323,6 @@
         try {
           if (confirm('Delete this entry?')) {
             await expensesRef.doc(id).delete();
-            await writeHistory('Deleted expense', id);
           }
         } catch (e) {
           console.error(e);
@@ -346,6 +330,116 @@
         }
       }
     });
+
+    // --- Import / Export (Excel)
+    function exportToExcel(){
+      try {
+        const data = entries.map(e => ({
+          Person: e.person || '',
+          Amount: Number(e.amount || 0),
+          Note: e.note || '',
+          Date: e.date || '',
+          ReceiptURL: e.image || '',
+          EntryID: e.id || '',
+          CreatedBy: e.displayName || e.email || ''
+        }));
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Expenses');
+        XLSX.writeFile(wb, 'expenses_' + (new Date().toISOString().slice(0,10)) + '.xlsx');
+      } catch (e) {
+        console.error(e);
+        authError.textContent = 'Export failed: ' + (e?.message || e);
+      }
+    }
+
+    function normalizeDateForInput(val){
+      try {
+        if (!val && val !== 0) return '';
+        if (val instanceof Date) {
+          const y = val.getFullYear();
+          const m = String(val.getMonth()+1).padStart(2,'0');
+          const d = String(val.getDate()).padStart(2,'0');
+          return `${y}-${m}-${d}`;
+        }
+        if (typeof val === 'number' && XLSX?.SSF?.parse_date_code) {
+          const o = XLSX.SSF.parse_date_code(val);
+          if (o) return `${o.y}-${String(o.m).padStart(2,'0')}-${String(o.d).padStart(2,'0')}`;
+        }
+        const s = String(val).trim();
+        const dt = new Date(s);
+        if (!isNaN(dt)) {
+          const y = dt.getFullYear();
+          const m = String(dt.getMonth()+1).padStart(2,'0');
+          const d = String(dt.getDate()).padStart(2,'0');
+          return `${y}-${m}-${d}`;
+        }
+        return s;
+      } catch { return ''; }
+    }
+
+    async function handleImport(ev){
+      importStatus.textContent = '';
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      try {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type:'array', cellDates:true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval:'', raw:true });
+        if (!rows.length) { importStatus.textContent = 'No rows found.'; return; }
+
+        let batch = db.batch(); let ops = 0; let added = 0;
+        const flush = async () => { if (ops>0) { await batch.commit(); batch = db.batch(); ops = 0; } };
+
+        for (const r of rows) {
+          const mapKey = k => String(k||'').toLowerCase().trim();
+          const get = (names) => {
+            for (const n of names) {
+              if (Object.prototype.hasOwnProperty.call(r, n)) return r[n];
+              for (const key in r) { if (mapKey(key) === mapKey(n)) return r[key]; }
+            }
+            return '';
+          };
+
+          const person = String(get(['Person','Name'])).trim();
+          const amountVal = get(['Amount']);
+          const amount = Number(typeof amountVal === 'string' ? amountVal.replace(/[^0-9.\-]/g,'') : amountVal) || 0;
+          let date = get(['Date']);
+          const note = String(get(['Note','Notes'])).trim();
+          const image = String(get(['ReceiptURL','Image'])).trim() || null;
+          const idFromSheet = String(get(['EntryID','ID'])).trim();
+
+          if (!person || !amount) continue;
+
+          date = normalizeDateForInput(date) || todayStr();
+
+          const now = firebase.firestore.FieldValue.serverTimestamp();
+          const id = idFromSheet || uid();
+          const docRef = expensesRef.doc(id);
+          batch.set(docRef, {
+            id, person, amount, note, date, image,
+            uid: auth.currentUser?.uid || '',
+            email: auth.currentUser?.email || '',
+            displayName: auth.currentUser?.displayName || '',
+            updatedAt: now,
+            createdAt: now
+          }, { merge: true });
+          ops++; added++;
+          if (ops >= 400) { await flush(); } // stay under 500 writes/batch
+        }
+        await flush();
+        importStatus.textContent = 'Imported ' + added + ' row(s).';
+        importFile.value = '';
+      } catch (e) {
+        console.error(e);
+        importStatus.textContent = 'Import failed: ' + (e?.message || e);
+      }
+    }
+
+    if (exportBtn) exportBtn.addEventListener('click', exportToExcel);
+    if (importBtn) importBtn.addEventListener('click', ()=> importFile && importFile.click());
+    if (importFile) importFile.addEventListener('change', handleImport);
 
     // --- Renderers
     function render() {
@@ -361,27 +455,11 @@
       `).join('');
     }
 
-    function renderHistory(){
-      historyBody.innerHTML = historyRows.map(h => `
-        <tr>
-          <td>${escapeHtml(fmtTs(h.at))}</td>
-          <td>${escapeHtml(h.action || '')}</td>
-        </tr>
-      `).join('');
-    }
-
     // --- Utils
     function escapeHtml(s){
       return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
     }
     function escapeAttr(s){ return String(s).replace(/"/g, '&quot;'); }
-    function fmtTs(ts){
-      try {
-        const d = ts?.toDate ? ts.toDate() : (typeof ts === 'string' ? new Date(ts) : null);
-        if(!d) return '';
-        return d.toLocaleString();
-      } catch { return ''; }
-    }
   </script>
 </body>
 </html>
