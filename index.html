@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<!-- saved from url=(0032)http://127.0.0.1:5500/index.html -->
-<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-  
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Shared Expense Tracker (Firebase + Google Login)</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
@@ -18,35 +18,36 @@
     a { color: blue; }
     .hidden { display:none; }
     .thumb { width:48px; height:48px; object-fit:cover; border-radius:6px; border:1px solid #ddd; }
+    .error { color:#b00020; font-size:12px; margin:6px 0; }
   </style>
 
   <!-- Firebase SDKs (compat) -->
-  <script src="./index_files/firebase-app-compat.js.download"></script>
-  <script src="./index_files/firebase-auth-compat.js.download"></script>
-  <script src="./index_files/firebase-firestore-compat.js.download"></script>
-  <script src="./index_files/firebase-storage-compat.js.download"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
 </head>
 <body>
 
   <div class="topbar">
     <h1>💸 Shared Expense Tracker</h1>
     <div class="auth">
-      <span id="userInfo" class="muted">Signed in as tasteofkathmandu au</span>
-      <button id="signInBtn" class="hidden">Sign in with Google</button>
-      <button id="signOutBtn" class="">Sign out</button>
+      <span id="userInfo" class="muted hidden"></span>
+      <button id="signInBtn">Sign in with Google</button>
+      <button id="signOutBtn" class="hidden">Sign out</button>
     </div>
   </div>
 
-  <div id="authError" class="muted" style="color:#b00020;"></div>
-  <div id="signedOutMsg" class="muted hidden">Please sign in to view and edit shared expenses.</div>
+  <div id="authError" class="error"></div>
+  <div id="signedOutMsg" class="muted">Please sign in to view and edit shared expenses.</div>
 
-  <div id="app" class="">
+  <div id="app" class="hidden">
     <form id="entryForm">
-      <input id="person" name="person" placeholder="Person" required="">
-      <input id="amount" name="amount" type="number" step="0.01" placeholder="Amount" required="">
-      <input id="date" name="date" type="date" required="">
-      <input id="note" name="note" placeholder="Note">
-      <input id="image" name="image" type="file" accept="image/*">
+      <input id="person" name="person" placeholder="Person" required />
+      <input id="amount" name="amount" type="number" step="0.01" placeholder="Amount" required />
+      <input id="date" name="date" type="date" required />
+      <input id="note" name="note" placeholder="Note" />
+      <input id="image" name="image" type="file" accept="image/*" />
       <button type="submit">Add</button>
     </form>
 
@@ -61,16 +62,7 @@
           <th>Actions</th>
         </tr>
       </thead>
-      <tbody id="tbody">
-      <tr>
-        <td><a href="./index_files/1755297050418-TasteOfKathmandu_ButterChicken_20250715053847_thumbs_v2.jpg" target="_blank"><img class="thumb" src="./index_files/1755297050418-TasteOfKathmandu_ButterChicken_20250715053847_thumbs_v2.jpg" alt="receipt"></a></td>
-        <td>james</td>
-        <td>12.00</td>
-        <td></td>
-        <td>2025-08-15</td>
-        <td><button data-action="delete" data-id="xkyh5u7e6medejly2">Delete</button></td>
-      </tr>
-    </tbody>
+      <tbody id="tbody"></tbody>
     </table>
 
     <div style="margin-top:10px">
@@ -79,12 +71,12 @@
   </div>
 
 <script>
-  // === Your Firebase Config (from your message, with bucket fixed) ===
+  // === Your Firebase Config ===
   const firebaseConfig = {
     apiKey: "AIzaSyAPICqhLo25TvAQnCHZiZWDO6qyBA_CLXo",
     authDomain: "sharedexpenses-2510b.firebaseapp.com",
     projectId: "sharedexpenses-2510b",
-    storageBucket: "sharedexpenses-2510b.appspot.com", // fixed
+    storageBucket: "sharedexpenses-2510b.appspot.com", // must end with .appspot.com
     messagingSenderId: "312950592413",
     appId: "1:312950592413:web:62239b41780211ba31d574"
   };
@@ -106,40 +98,46 @@
   const tbody = document.getElementById('tbody');
   const entryForm = document.getElementById('entryForm');
   const resetBtn = document.getElementById('resetBtn');
+  const dateInput = document.getElementById('date');
 
   let entries = [];
   let unsubscribe = null;
 
   function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  function todayStr(){ return new Date().toISOString().slice(0,10); }
+  dateInput.value = todayStr();
 
-  // --- robust sign-in (popup with redirect fallback; supports file:// too)
+  // --- robust sign-in (popup with redirect fallback)
   const provider = new firebase.auth.GoogleAuthProvider();
 
   async function signInWithGoogle() {
-    try {
-      await auth.signInWithPopup(provider);
-    } catch (err) {
+    try { await auth.signInWithPopup(provider); }
+    catch (err) {
       console.warn('Popup failed, using redirect:', err?.message);
       await auth.signInWithRedirect(provider);
     }
   }
 
-  const isFile = location.protocol === 'file:';
   signInBtn.addEventListener('click', async ()=>{
     authError.textContent = '';
-    try {
-      if (isFile) return auth.signInWithRedirect(provider);
-      await signInWithGoogle();
-    } catch (e) {
-      authError.textContent = 'Sign-in error: ' + (e?.message || e);
-    }
+    try { await signInWithGoogle(); }
+    catch (e) { authError.textContent = 'Sign-in error: ' + (e?.message || e); }
+  });
+
+  signOutBtn.addEventListener('click', async ()=>{
+    authError.textContent = '';
+    try { await auth.signOut(); }
+    catch (e) { authError.textContent = 'Sign-out error: ' + (e?.message || e); }
   });
 
   auth.getRedirectResult().catch(e=>{
     authError.textContent = 'Sign-in error: ' + (e?.message || e);
   });
 
-  signOutBtn.addEventListener('click', ()=> auth.signOut());
+  // --- handle auth state
+  function setFormEnabled(enabled){
+    entryForm.querySelectorAll('input,button').forEach(el => el.disabled = !enabled);
+  }
 
   auth.onAuthStateChanged(user=>{
     if(user){
@@ -149,13 +147,20 @@
       userInfo.classList.remove('hidden');
       signedOutMsg.classList.add('hidden');
       app.classList.remove('hidden');
+      setFormEnabled(true);
 
       if (unsubscribe) unsubscribe();
-      unsubscribe = expensesRef.orderBy("date","desc").onSnapshot(snap=>{
-        entries = [];
-        snap.forEach(doc => entries.push(doc.data()));
-        render();
-      });
+      unsubscribe = expensesRef.orderBy("date","desc").onSnapshot(
+        snap=>{
+          entries = [];
+          snap.forEach(doc => entries.push(doc.data()));
+          render();
+        },
+        err=>{
+          console.error(err);
+          authError.textContent = 'Read error (Firestore rules/domain?): ' + (err?.message || err);
+        }
+      );
     }else{
       if (unsubscribe) unsubscribe();
       entries = []; render();
@@ -164,6 +169,7 @@
       signInBtn.classList.remove('hidden');
       signedOutMsg.classList.remove('hidden');
       app.classList.add('hidden');
+      setFormEnabled(false);
     }
   });
 
@@ -177,30 +183,34 @@
   // --- Create entry
   entryForm.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    authError.textContent = '';
     const user = auth.currentUser;
-    if(!user){ alert('Please sign in.'); return; }
+    if(!user){ authError.textContent = 'Please sign in first.'; return; }
 
     const fd = new FormData(ev.target);
-    const person = fd.get('person').toString().trim();
-    const amount = Number(fd.get('amount'));
+    const person = (fd.get('person')||'').toString().trim();
+    const amount = Number(fd.get('amount')||0);
     const note = (fd.get('note')||'').toString();
-    const date = fd.get('date').toString();
+    const date = (fd.get('date')||todayStr()).toString();
 
     let imageURL = null;
     const file = fd.get('image');
-    if (file && file.size) {
-      imageURL = await uploadImage(file);
+    try {
+      if (file && file.size) imageURL = await uploadImage(file);
+      const now = firebase.firestore.FieldValue.serverTimestamp();
+      const entry = {
+        id: uid(),
+        person, amount, note, date, image: imageURL,
+        uid: user.uid, email: user.email, displayName: user.displayName || '',
+        createdAt: now, updatedAt: now
+      };
+      await expensesRef.doc(entry.id).set(entry);
+      ev.target.reset();
+      dateInput.value = todayStr();
+    } catch (e) {
+      console.error(e);
+      authError.textContent = 'Save error (check rules/auth): ' + (e?.message || e);
     }
-
-    const now = firebase.firestore.FieldValue.serverTimestamp();
-    const entry = {
-      id: uid(),
-      person, amount, note, date, image: imageURL,
-      uid: user.uid, email: user.email, displayName: user.displayName || '',
-      createdAt: now, updatedAt: now
-    };
-    await expensesRef.doc(entry.id).set(entry);
-    ev.target.reset();
   });
 
   // --- Delete entry
@@ -210,17 +220,27 @@
     const id = btn.getAttribute('data-id');
     const action = btn.getAttribute('data-action');
     if (action === 'delete') {
-      if (confirm('Delete this entry?')) await expensesRef.doc(id).delete();
+      try {
+        if (confirm('Delete this entry?')) await expensesRef.doc(id).delete();
+      } catch (e) {
+        console.error(e);
+        authError.textContent = 'Delete error: ' + (e?.message || e);
+      }
     }
   });
 
   // --- Reset (delete all)
   resetBtn.addEventListener('click', async () => {
-    if (confirm('Clear all entries?')) {
-      const snap = await expensesRef.get();
-      const batch = db.batch();
-      snap.forEach(doc => batch.delete(doc.ref));
-      await batch.commit();
+    try {
+      if (confirm('Clear all entries?')) {
+        const snap = await expensesRef.get();
+        const batch = db.batch();
+        snap.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+      }
+    } catch (e) {
+      console.error(e);
+      authError.textContent = 'Reset error: ' + (e?.message || e);
     }
   });
 
@@ -240,44 +260,5 @@
 
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
 </script>
-<!-- Code injected by live-server -->
-<script>
-	// <![CDATA[  <-- For SVG support
-	if ('WebSocket' in window) {
-		(function () {
-			function refreshCSS() {
-				var sheets = [].slice.call(document.getElementsByTagName("link"));
-				var head = document.getElementsByTagName("head")[0];
-				for (var i = 0; i < sheets.length; ++i) {
-					var elem = sheets[i];
-					var parent = elem.parentElement || head;
-					parent.removeChild(elem);
-					var rel = elem.rel;
-					if (elem.href && typeof rel != "string" || rel.length == 0 || rel.toLowerCase() == "stylesheet") {
-						var url = elem.href.replace(/(&|\?)_cacheOverride=\d+/, '');
-						elem.href = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_cacheOverride=' + (new Date().valueOf());
-					}
-					parent.appendChild(elem);
-				}
-			}
-			var protocol = window.location.protocol === 'http:' ? 'ws://' : 'wss://';
-			var address = protocol + window.location.host + window.location.pathname + '/ws';
-			var socket = new WebSocket(address);
-			socket.onmessage = function (msg) {
-				if (msg.data == 'reload') window.location.reload();
-				else if (msg.data == 'refreshcss') refreshCSS();
-			};
-			if (sessionStorage && !sessionStorage.getItem('IsThisFirstTime_Log_From_LiveServer')) {
-				console.log('Live reload enabled.');
-				sessionStorage.setItem('IsThisFirstTime_Log_From_LiveServer', true);
-			}
-		})();
-	}
-	else {
-		console.error('Upgrade your browser. This Browser is NOT supported WebSocket for Live-Reloading.');
-	}
-	// ]]>
-</script>
-
-
-</body></html>
+</body>
+</html>
