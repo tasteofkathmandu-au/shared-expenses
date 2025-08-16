@@ -113,8 +113,30 @@
         </table>
         <div class="stack" style="margin-top:12px; justify-content:space-between">
           <div class="muted">Tip: click a thumbnail to open full image.</div>
-          <button id="resetBtn" class="btn-danger">Reset All</button>
         </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <div class="body" style="overflow:auto">
+        <div class="stack" style="justify-content:space-between">
+          <div class="brand" style="font-size:16px">History</div>
+          <div class="muted">Shows who changed what, and when</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Who</th>
+              <th>Action</th>
+              <th>Person</th>
+              <th>Amount</th>
+              <th>Note</th>
+              <th>Changed Fields</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
       </div>
     </section>
   </main>
@@ -139,6 +161,7 @@
   storage.setMaxOperationRetryTime(20000);
 
   const expensesRef = db.collection("expenses");
+  const activityRef = db.collection("activity");
 
   // UI refs
   const app = document.getElementById('app');
@@ -148,8 +171,8 @@
   const signOutBtn = document.getElementById('signOutBtn');
   const authError = document.getElementById('authError');
   const tbody = document.getElementById('tbody');
+  const historyBody = document.getElementById('historyBody');
   const entryForm = document.getElementById('entryForm');
-  const resetBtn = document.getElementById('resetBtn');
   const dateInput = document.getElementById('date');
   const uploadStatus = document.getElementById('uploadStatus');
   const fallbackNotice = document.getElementById('fallbackNotice');
@@ -160,7 +183,9 @@
   const removeImageChk = document.getElementById('removeImageChk');
 
   let entries = [];
-  let unsubscribe = null;
+  let activity = [];
+  let unsubExpenses = null;
+  let unsubActivity = null;
   let editingId = null; // if set, we're editing this doc
 
   function uid(){ return Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -186,14 +211,21 @@
       app.classList.remove('hidden');
       setFormEnabled(true);
 
-      if (unsubscribe) unsubscribe();
-      unsubscribe = expensesRef.orderBy("date","desc").onSnapshot(
+      if (unsubExpenses) unsubExpenses();
+      unsubExpenses = expensesRef.orderBy("date","desc").onSnapshot(
         snap=>{ entries = []; snap.forEach(doc => entries.push(doc.data())); render(); },
         err=>{ console.error(err); authError.textContent = 'Read error (Firestore rules/domain?): ' + (err?.message || err); }
       );
+
+      if (unsubActivity) unsubActivity();
+      unsubActivity = activityRef.orderBy("at","desc").limit(100).onSnapshot(
+        snap=>{ activity = []; snap.forEach(doc => activity.push(doc.data())); renderHistory(); },
+        err=>{ console.error(err); }
+      );
     }else{
-      if (unsubscribe) unsubscribe();
-      entries = []; render();
+      if (unsubExpenses) unsubExpenses();
+      if (unsubActivity) unsubActivity();
+      entries = []; activity = []; render(); renderHistory();
       userInfo.classList.add('hidden');
       signOutBtn.classList.add('hidden');
       signInBtn.classList.remove('hidden');
@@ -254,6 +286,27 @@
     }
   }
 
+  // --- Activity logger
+  function diffFields(before={}, after={}){
+    const keys = ['person','amount','note','date','image'];
+    const changed=[]; keys.forEach(k=>{ if (String(before[k]??'') !== String(after[k]??'')) changed.push(k); });
+    return changed;
+  }
+  async function logActivity({action, expenseId, before=null, after=null, user}){
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+    const changed = diffFields(before||{}, after||{});
+    const base = {
+      id: uid(), expenseId, action,
+      person: (after?.person ?? before?.person) || '',
+      amount: Number(after?.amount ?? before?.amount ?? 0),
+      note: (after?.note ?? before?.note) || '',
+      date: (after?.date ?? before?.date) || '',
+      byUid: user.uid, byEmail: user.email, byName: user.displayName || '',
+      at: now, changed
+    };
+    await activityRef.doc(base.id).set(base);
+  }
+
   // --- Add / Edit entry
   entryForm.addEventListener('submit', async (ev)=>{
     ev.preventDefault(); authError.textContent='';
@@ -272,15 +325,19 @@
         let imageURL=null; if (file && file.size) imageURL = await uploadImageSmart(file);
         const now = firebase.firestore.FieldValue.serverTimestamp();
         const id = uid();
-        await expensesRef.doc(id).set({ id, person, amount, note, date, image:imageURL, uid:user.uid, email:user.email, displayName:user.displayName||'', createdAt:now, updatedAt:now });
+        const after = { id, person, amount, note, date, image:imageURL, uid:user.uid, email:user.email, displayName:user.displayName||'', createdAt:now, updatedAt:now };
+        await expensesRef.doc(id).set(after);
+        await logActivity({ action:'create', expenseId:id, before:null, after, user });
       } else {
         // UPDATE
         const now = firebase.firestore.FieldValue.serverTimestamp();
-        const original = entries.find(e=>e.id===editingId) || {};
-        let imageURL = original.image || null;
+        const before = entries.find(e=>e.id===editingId) || {};
+        let imageURL = before.image || null;
         if (removeImageChk.checked) imageURL = null; // explicit remove
         if (file && file.size) imageURL = await uploadImageSmart(file); // replace
-        await expensesRef.doc(editingId).set({ person, amount, note, date, image:imageURL, updatedAt:now }, { merge:true });
+        const after = { person, amount, note, date, image:imageURL, updatedAt:now };
+        await expensesRef.doc(editingId).set(after, { merge:true });
+        await logActivity({ action:'update', expenseId:editingId, before, after, user });
       }
       // reset UI
       entryForm.reset(); dateInput.value = todayStr();
@@ -298,7 +355,12 @@
     const btn = ev.target.closest('button'); if(!btn) return;
     const id = btn.getAttribute('data-id'); const action = btn.getAttribute('data-action');
     if (action==='delete'){
-      try{ if (confirm('Delete this entry?')) await expensesRef.doc(id).delete(); }
+      try{
+        const user = auth.currentUser; if (!user){ authError.textContent='Please sign in first.'; return; }
+        const before = entries.find(e=>e.id===id) || {};
+        await logActivity({ action:'delete', expenseId:id, before, after:null, user });
+        await expensesRef.doc(id).delete();
+      }
       catch(e){ console.error(e); authError.textContent = 'Delete error: ' + (e?.message||e); }
     }
     if (action==='edit'){
@@ -318,12 +380,6 @@
   function endEditMode(){ editingId=null; submitBtn.textContent='Add'; cancelEditBtn.classList.add('hidden'); removeImageWrap.classList.add('hidden'); removeImageChk.checked=false; }
   cancelEditBtn.addEventListener('click', ()=>{ entryForm.reset(); dateInput.value=todayStr(); endEditMode(); });
 
-  // --- Reset (delete all)
-  resetBtn.addEventListener('click', async ()=>{
-    try{ if (confirm('Clear all entries?')){ const snap = await expensesRef.get(); const batch = db.batch(); snap.forEach(doc=>batch.delete(doc.ref)); await batch.commit(); } }
-    catch(e){ console.error(e); authError.textContent = 'Reset error: ' + (e?.message||e); }
-  });
-
   // --- Render table
   function render(){
     tbody.innerHTML = entries.map(e=>`
@@ -334,6 +390,21 @@
         <td>${escapeHtml(e.note||'')}</td>
         <td>${escapeHtml(e.date||'')}</td>
         <td class="stack"><button class="btn" data-action="edit" data-id="${e.id}">Edit</button><button class="btn-danger" data-action="delete" data-id="${e.id}">Delete</button></td>
+      </tr>
+    `).join('');
+  }
+
+  function fmtDateTime(ts){ try{ if(!ts) return ''; const d = ts.toDate ? ts.toDate() : new Date(ts); return d.toLocaleString(); }catch{ return ''; } }
+  function renderHistory(){
+    historyBody.innerHTML = activity.map(a=>`
+      <tr>
+        <td>${fmtDateTime(a.at)}</td>
+        <td>${escapeHtml(a.byName||a.byEmail||'')}</td>
+        <td>${escapeHtml(a.action)}</td>
+        <td>${escapeHtml(a.person||'')}</td>
+        <td>${Number(a.amount||0).toFixed(2)}</td>
+        <td>${escapeHtml(a.note||'')}</td>
+        <td>${(a.changed||[]).join(', ')}</td>
       </tr>
     `).join('');
   }
