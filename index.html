@@ -43,6 +43,7 @@
 
   <div id="app" class="hidden">
     <form id="entryForm">
+      <!-- Upload status lives here -->
       <div id="uploadStatus" class="muted"></div>
       <input id="person" name="person" placeholder="Person" required />
       <input id="amount" name="amount" type="number" step="0.01" placeholder="Amount" required />
@@ -100,6 +101,7 @@
   const entryForm = document.getElementById('entryForm');
   const resetBtn = document.getElementById('resetBtn');
   const dateInput = document.getElementById('date');
+  const uploadStatus = document.getElementById('uploadStatus');
 
   let entries = [];
   let unsubscribe = null;
@@ -174,11 +176,82 @@
     }
   });
 
-  // --- Image upload (auth required by rules)
+  // === Image compression + upload ===
+  async function compressImage(file, maxDim = 1280, quality = 0.85) {
+    // Return { blob, contentType }
+    return new Promise((resolve) => {
+      const originalType = file.type || 'application/octet-stream';
+      const reader = new FileReader();
+      const img = new Image();
+
+      const fallback = () => resolve({ blob: file, contentType: originalType });
+
+      reader.onerror = fallback;
+      img.onerror = fallback;
+
+      reader.onload = () => { img.src = reader.result; };
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else if (height >= width && height > maxDim) { width = Math.round(width * (maxDim / height)); height = maxDim; }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob((blob) => {
+          if (blob) resolve({ blob, contentType: 'image/jpeg' });
+          else fallback();
+        }, 'image/jpeg', quality);
+      };
+
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function uploadImage(file) {
-    const ref = storage.ref(`receipts/${Date.now()}-${file.name}`);
-    await ref.put(file);
-    return await ref.getDownloadURL();
+    uploadStatus.textContent = 'Preparing image…';
+
+    // Compress if possible; fallback to original with correct contentType
+    const { blob, contentType } = await compressImage(file);
+
+    // Choose extension based on contentType (handles HEIC/PNG/etc)
+    let ext = 'jpg';
+    if (contentType !== 'image/jpeg') {
+      const m = (file.name || '').match(/\.(\w+)$/);
+      ext = m ? m[1].toLowerCase() : 'bin';
+    }
+
+    const baseName = (file.name || 'receipt').replace(/[^a-z0-9._-]/gi,'_');
+    const safeName = `${Date.now()}-${baseName}.${ext}`;
+    const ref = storage.ref(`receipts/${safeName}`);
+    const metadata = { contentType };
+
+    return new Promise((resolve, reject) => {
+      const task = ref.put(blob, metadata);
+
+      task.on('state_changed',
+        (snap) => {
+          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+          uploadStatus.textContent = `Uploading… ${pct}%`;
+        },
+        (err) => {
+          uploadStatus.textContent = '';
+          reject(err);
+        },
+        async () => {
+          try {
+            const url = await ref.getDownloadURL();
+            uploadStatus.textContent = '';
+            resolve(url);
+          } catch (e) {
+            uploadStatus.textContent = '';
+            reject(e);
+          }
+        }
+      );
+    });
   }
 
   // --- Create entry
@@ -196,8 +269,16 @@
 
     let imageURL = null;
     const file = fd.get('image');
+
     try {
-      if (file && file.size) imageURL = await uploadImage(file);
+      // Disable only the submit button while we work
+      const submitBtn = entryForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+
+      if (file && file.size) {
+        imageURL = await uploadImage(file); // ← new function with progress
+      }
+
       const now = firebase.firestore.FieldValue.serverTimestamp();
       const entry = {
         id: uid(),
@@ -205,12 +286,25 @@
         uid: user.uid, email: user.email, displayName: user.displayName || '',
         createdAt: now, updatedAt: now
       };
+
       await expensesRef.doc(entry.id).set(entry);
       ev.target.reset();
       dateInput.value = todayStr();
+      uploadStatus.textContent = ''; // clear any leftover status
+      submitBtn.disabled = false;
     } catch (e) {
       console.error(e);
-      authError.textContent = 'Save error (check rules/auth): ' + (e?.message || e);
+      const msg = e && e.message ? e.message : String(e);
+      if (msg.includes('permission') || msg.includes('storage/unauthorized')) {
+        authError.textContent = 'Upload blocked by Storage rules. Make sure rules allow request.auth != null and you are signed in.';
+      } else if (msg.includes('No default bucket') || msg.includes('storage bucket')) {
+        authError.textContent = 'Storage bucket not initialized. In Firebase Console → Build → Storage → click “Get started”.';
+      } else {
+        authError.textContent = 'Image upload failed: ' + msg;
+      }
+      uploadStatus.textContent = '';
+      const submitBtn = entryForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = false;
     }
   });
 
@@ -259,7 +353,7 @@
     `).join('');
   }
 
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
 </script>
 </body>
 </html>
