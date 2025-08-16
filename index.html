@@ -53,7 +53,7 @@
       <button type="submit">Add</button>
     </form>
 
-    <div id="fallbackNotice" class="note hidden">Network blocked Google Storage. Image was uploaded via Cloudinary instead.</div>
+    <div id="fallbackNotice" class="note hidden">Network blocked uploads to Firebase Storage. I saved the image inside Firestore instead. Everything will still display normally.</div>
 
     <table>
       <thead>
@@ -75,7 +75,7 @@
   </div>
 
 <script>
-  // === Firebase Config ===
+  // === Your Firebase Config ===
   const firebaseConfig = {
     apiKey: "AIzaSyAPICqhLo25TvAQnCHZiZWDO6qyBA_CLXo",
     authDomain: "sharedexpenses-2510b.firebaseapp.com",
@@ -85,18 +85,14 @@
     appId: "1:312950592413:web:62239b41780211ba31d574"
   };
 
-  // === Cloudinary (fill these) ===
-  const CLOUDINARY_CLOUD  = "YOUR_CLOUD_NAME";     // e.g. "mycloud123"
-  const CLOUDINARY_PRESET = "YOUR_UNSIGNED_PRESET"; // e.g. "unsigned_uploads"
-
-  // Init Firebase
+  // Init Firebase services
   firebase.initializeApp(firebaseConfig);
   const auth = firebase.auth();
   const db = firebase.firestore();
   const storage = firebase.storage();
-  // keep Firebase retries short so we fall back promptly
-  storage.setMaxUploadRetryTime(20000);
-  storage.setMaxOperationRetryTime(20000);
+  // keep uploads from hanging forever on shaky networks
+  storage.setMaxUploadRetryTime(45000);
+  storage.setMaxOperationRetryTime(45000);
 
   const expensesRef = db.collection("expenses");
 
@@ -121,7 +117,7 @@
   function todayStr(){ return new Date().toISOString().slice(0,10); }
   dateInput.value = todayStr();
 
-  // --- Auth
+  // --- Auth (popup with redirect fallback)
   const provider = new firebase.auth.GoogleAuthProvider();
   async function signInWithGoogle() {
     try { await auth.signInWithPopup(provider); }
@@ -181,83 +177,68 @@
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        canvas.toBlob((blob) => { if (blob) resolve({ blob, contentType: 'image/jpeg' }); else fallback(); }, 'image/jpeg', quality);
+        canvas.toBlob((blob) => {
+          if (blob) resolve({ blob, contentType: 'image/jpeg' });
+          else fallback();
+        }, 'image/jpeg', quality);
       };
       reader.readAsDataURL(file);
     });
   }
 
-  function toFile(blob, filename, type){
-    try { return new File([blob], filename, { type }); }
-    catch { return blob; } // older browsers
-  }
-
-  async function uploadViaFirebase(blob, filename, contentType){
-    const ref = storage.ref(`receipts/${filename}`);
-    const metadata = { contentType };
-    return new Promise((resolve, reject) => {
-      const task = ref.put(blob, metadata);
-      task.on('state_changed',
-        (snap) => {
-          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-          uploadStatus.textContent = `Uploading… ${pct}%`;
-        },
-        reject,
-        async () => {
-          const url = await ref.getDownloadURL();
-          resolve(url);
-        }
-      );
+  function blobToDataURL(blob){
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onerror = rej;
+      r.onload = () => res(r.result);
+      r.readAsDataURL(blob);
     });
   }
 
-  async function uploadViaCloudinary(blob, filename, contentType){
-    // Needs CLOUDINARY_CLOUD and CLOUDINARY_PRESET filled
-    const fileForUpload = toFile(blob, filename, contentType);
-    const fd = new FormData();
-    fd.append('file', fileForUpload);
-    fd.append('upload_preset', CLOUDINARY_PRESET);
-    fd.append('folder', 'receipts');
-
-    const endpoint = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`;
-    const res = await fetch(endpoint, { method: 'POST', body: fd });
-    if(!res.ok){
-      const txt = await res.text().catch(()=> '');
-      throw new Error('Cloudinary upload failed: ' + (txt||res.statusText));
-    }
-    const json = await res.json();
-    return json.secure_url;
-  }
-
-  async function uploadImageSmart(file){
+  // Try Storage upload; if network blocks Storage, fall back to inline data URL
+  async function uploadImageSmart(file) {
     uploadStatus.textContent = 'Preparing image…';
 
+    // compress (or use original) and pick a good contentType
     const { blob, contentType } = await compressImage(file);
+    let ext = 'jpg';
+    if (contentType !== 'image/jpeg') {
+      const m = (file.name || '').match(/\.(\w+)$/); ext = m ? m[1].toLowerCase() : 'bin';
+    }
     const baseName = (file.name || 'receipt').replace(/[^a-z0-9._-]/gi,'_');
-    const filename = `${Date.now()}-${baseName}`.replace(/\.+/g,'.');
+    const safeName = `${Date.now()}-${baseName}.${ext}`;
+    const ref = storage.ref(`receipts/${safeName}`);
+    const metadata = { contentType };
 
-    // Try Firebase first
+    // attempt Storage upload with progress
     try {
-      const url = await uploadViaFirebase(blob, filename, contentType);
+      await new Promise((resolve, reject) => {
+        const task = ref.put(blob, metadata);
+        task.on('state_changed',
+          (snap) => {
+            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+            uploadStatus.textContent = `Uploading… ${pct}%`;
+          },
+          (err) => reject(err),
+          () => resolve()
+        );
+      });
+      const url = await ref.getDownloadURL();
       uploadStatus.textContent = '';
+      // normal path
       fallbackNotice.classList.add('hidden');
-      return url;
-    } catch (e) {
-      const msg = (e && e.message) ? e.message : String(e);
-      // Timeouts / network blocks → use Cloudinary
-      if (msg.includes('retry-limit-exceeded') || msg.toLowerCase().includes('network') || msg.includes('Failed to fetch')) {
-        try{
-          const url = await uploadViaCloudinary(blob, filename, contentType);
-          uploadStatus.textContent = '';
-          fallbackNotice.classList.remove('hidden');
-          return url;
-        }catch (e2){
-          uploadStatus.textContent = '';
-          throw e2; // show Cloudinary error
-        }
+      return { url, inline: false };
+    } catch (err) {
+      // If network blocks Storage, use inline data URL so the app still works
+      const msg = (err && err.message) ? err.message : String(err);
+      if (msg.includes('retry-limit-exceeded') || msg.includes('network') || msg.includes('Failed to fetch')) {
+        const dataUrl = await blobToDataURL(blob);
+        uploadStatus.textContent = '';
+        fallbackNotice.classList.remove('hidden');
+        return { url: dataUrl, inline: true };
       }
       uploadStatus.textContent = '';
-      throw e; // other Firebase errors (e.g., rules) surface
+      throw err; // other errors bubble up (e.g., unauthorized)
     }
   }
 
@@ -282,8 +263,10 @@
 
     try {
       if (file && file.size) {
-        imageURL = await uploadImageSmart(file);
+        const res = await uploadImageSmart(file);  // may fall back to data URL
+        imageURL = res.url;
       }
+
       const now = firebase.firestore.FieldValue.serverTimestamp();
       const entry = {
         id: uid(),
@@ -291,6 +274,7 @@
         uid: user.uid, email: user.email, displayName: user.displayName || '',
         createdAt: now, updatedAt: now
       };
+
       await expensesRef.doc(entry.id).set(entry);
       ev.target.reset();
       dateInput.value = todayStr();
@@ -301,6 +285,8 @@
       const msg = e && e.message ? e.message : String(e);
       if (msg.includes('permission') || msg.includes('storage/unauthorized')) {
         authError.textContent = 'Upload blocked by Storage rules. Ensure rules allow request.auth != null and you are signed in.';
+      } else if (msg.includes('No default bucket') || msg.includes('storage bucket')) {
+        authError.textContent = 'Storage bucket not initialized. Firebase Console → Build → Storage → “Get started”.';
       } else {
         authError.textContent = 'Image upload failed: ' + msg;
       }
